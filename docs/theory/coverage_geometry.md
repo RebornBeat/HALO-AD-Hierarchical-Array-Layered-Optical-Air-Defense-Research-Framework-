@@ -24,7 +24,9 @@ Each of these is a different aspect of "how good is this deployment?" and the si
 
 Ground-mounted sensors face a fundamental geometric limit: the Earth's curvature places a horizon between the sensor and any sufficiently distant low-altitude target. The horizon distance for a sensor at height *h_s* observing a target at altitude *h_t* (both measured from local ground level, both in meters, with the result in kilometers) is approximately:
 
+```
 d_horizon ≈ 3.57 · (√h_s + √h_t)
+```
 
 For a sensor at 2 meters and a target at 100 meters altitude, the horizon distance is roughly 41 km. A target below this altitude at greater range is geometrically unobservable to the sensor regardless of sensor performance.
 
@@ -40,7 +42,9 @@ This is the geometric problem that mast elevation addresses.
 
 Lifting a sensor to height *H_mast* above ground level shifts the horizon outward and downward. For a sensor at height *H_mast* + 2 meters (2 meters being the sensor's mount height above the mast top):
 
+```
 d_horizon ≈ 3.57 · (√(H_mast + 2) + √h_t)
+```
 
 A 30-meter mast extends the horizon for a 100-meter-altitude target from 41 km to roughly 56 km — a 37% increase. More importantly, the mast extends the horizon *downward*: targets at altitudes below what the ground-mounted sensor could see become geometrically observable.
 
@@ -50,7 +54,9 @@ The mast-elevation effect is *multiplicative* with sensor count. N ground-mounte
 
 Mast elevation creates a new geometric artifact: the *shadow cone* directly beneath the mast, where the sensor's down-look angle is geometrically limited by the mast structure or by the sensor's mechanical/electronic depression limit. For a sensor with maximum down-look angle *α* mounted at height *H_mast*:
 
+```
 shadow_radius = H_mast · tan(90° - α)
+```
 
 For a 30-meter mast with a sensor capable of 60° depression, the shadow radius is roughly 17 meters — a small dead zone immediately beneath the mast. For a sensor with only 30° depression, the shadow radius grows to roughly 52 meters.
 
@@ -69,11 +75,15 @@ The simulator parameterizes both dimensions and produces coverage-vs-cost curves
 
 For active sensors (LiDAR, radar with directional emission), the beam diverges with range. The effective beam radius at range *z*:
 
+```
 w(z) = w_0 + z · θ
+```
 
 where *w_0* is the initial aperture radius and *θ* is the divergence half-angle. Power density on a target at range *z*:
 
+```
 power_density(z) = total_power / (π · w(z)²)
+```
 
 This relationship has direct consequences:
 
@@ -87,7 +97,9 @@ The simulator parameterizes (*w_0*, *θ*) per sensor and computes effective sens
 
 Even an ideal beam diverges due to diffraction. The diffraction-limited divergence half-angle for a Gaussian beam of wavelength λ and waist radius *w_0* is:
 
+```
 θ_diffraction = λ / (π · w_0)
+```
 
 For a 1.5-μm wavelength with a 10 cm aperture, the diffraction-limited divergence is roughly 4.8 microradians — about 1 cm spot growth per kilometer of range. Real systems do not achieve the diffraction limit; the simulator parameterizes a *beam quality factor* M² that scales the effective divergence above the diffraction limit.
 
@@ -137,7 +149,9 @@ When multiple sensors observe a single voxel, their contributions compose:
 
 - **Independent observation.** Each sensor's detection is statistically independent (different modalities, different perspectives). Combined detection probability:
 
-P(detected) = 1 - Π(1 - P_i(detected))
+  ```
+  P(detected) = 1 - Π(1 - P_i(detected))
+  ```
 
 - **Geometric diversity.** Sensors from different angles produce different perspectives on the same target. The resulting joint observation is often qualitatively richer than either single observation, allowing 3D position estimation, target-pose estimation, and occlusion-recovery that single sensors cannot.
 
@@ -198,5 +212,3 @@ The civilian-transfer examples in the repository's `examples/civilian/` director
 Coverage geometry is the foundation of HALO-AD's simulation framework. The Earth-curvature constraint motivates mast elevation; mast elevation requires distributed deployment to address shadow cones; distributed deployment requires multi-sensor fusion and zone handoff; the resulting architecture has direct civilian-transfer applications across telecommunications, scientific instrumentation, and environmental monitoring.
 
 The simulator's core contribution is making this geometry computationally tractable for arbitrary scenarios, parameterized for realistic atmospheric and topological configurations, and producing comparable outputs across deployment alternatives.
-
-
