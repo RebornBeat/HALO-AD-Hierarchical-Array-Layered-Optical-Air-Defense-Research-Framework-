@@ -1,4 +1,4 @@
-# 1. HALO-AD — Hierarchical Array Layered Optical Air-Defense (Research Framework)
+# HALO-AD — Hierarchical Array Layered Optical Air-Defense (Research Framework)
 
 **A simulation and research framework for distributed, mast-elevated, multi-zone directed-energy coverage geometry, event-driven tracking, and multi-emitter coordination.**
 
@@ -113,6 +113,23 @@ The simulator computes **observability density** (how many emitters can see a gi
 
 ---
 
+## Theory Documents
+
+The simulation framework is supported by a set of theory documents that characterize the physics and geometry the simulator models. These are intended for researchers, students, and qualified licensees who want to understand the assumptions behind the simulator's outputs.
+
+- **`docs/theory/coverage_geometry.md`** — Earth-curvature, beam-divergence, atmospheric-attenuation, and steering-latency physics that govern engagement-volume coverage.
+- **`docs/theory/steering_latency_and_field_of_view.md`** — The mechanical-vs-solid-state-vs-hybrid-array tradeoff in beam steering, and how it drives the choice of distributed-array architectures over single-emitter systems.
+- **`docs/theory/sensor_fusion.md`** — Event-based vision, mmWave Doppler radar, and scanning LiDAR fusion at engagement timescales (shared with the AEGIS-MESH treatment, adapted for outdoor long-range coverage).
+- **`docs/theory/zoning_model.md`** — The cellular-RF-planning analogy for 3D engagement-volume zone planning.
+- **`docs/theory/future_research.md`** — The full research-domain map across all tiers, from in-scope simulation work to adjacent regulated domains documented for researchers with appropriate frameworks.
+
+The simulator's atmospheric and coordination components are documented at the implementation level in:
+
+- **`software/simulator/atmospheric_models.md`** — Thermal blooming, aerosol scattering, beam-divergence parameters used by the simulation.
+- **`software/coordination/zone_handoff.md`** — District handoff logic for multi-zone scenarios.
+
+---
+
 ## Zoning Model
 
 Inspired by cellular planning, the simulator partitions a region into **districts** (large areas) and **zones within districts** (smaller engagement volumes). Each zone is associated with one or more masts; every voxel inside a zone is observable from at least N masts (configurable). Zones overlap at their boundaries to enable continuous-track handoff between mast clusters as a target moves.
@@ -148,9 +165,11 @@ halo-ad/
 │   ├── guides/
 │   ├── theory/
 │   │   ├── coverage_geometry.md
+│   │   ├── steering_latency_and_field_of_view.md
 │   │   ├── zoning_model.md
 │   │   ├── mast_elevation_analysis.md
-│   │   └── sensor_fusion.md
+│   │   ├── sensor_fusion.md
+│   │   └── future_research.md
 │   ├── api/
 │   └── assets/
 ├── hardware/                  # PLACEHOLDER — no physical emitter design
@@ -158,10 +177,12 @@ halo-ad/
 ├── firmware/                  # PLACEHOLDER
 │   └── README.md
 ├── software/
-│   ├── simulator/             # Core simulation engine (Python)
+│   ├── simulator/
+│   │   └── atmospheric_models.md
 │   ├── geometry/              # Coverage geometry analysis
 │   ├── perception/            # Sensor fusion + PentaTrack integration
-│   ├── coordination/          # Zone handoff, mast assignment
+│   ├── coordination/
+│   │   └── zone_handoff.md
 │   ├── viz/                   # 3D coverage visualization
 │   ├── cli/                   # Scenario runner
 │   ├── sdk/                   # Python API for custom scenarios
@@ -173,6 +194,7 @@ halo-ad/
 ├── legal/
 │   ├── compliance.md          # Export-control / dual-use posture
 │   ├── research_ethics.md
+│   ├── export_control_posture.md
 │   └── tos_compliance.md
 ├── media/
 ├── README.md
@@ -208,10 +230,10 @@ All scenarios are virtual. Outputs are HTML reports, 3D coverage renders, and CS
 
 ## Roadmap
 
-- Phase 1 (current): coverage geometry simulator + zoning optimizer.
-- Phase 2: full PentaTrack integration with multi-mast track fusion.
-- Phase 3: event-camera + mmWave + LiDAR fused-perception pipeline (still simulated).
-- Phase 4: scenario library — published threat-trajectory datasets for reproducible research.
+- **Phase 1 (current):** coverage geometry simulator + zoning optimizer.
+- **Phase 2:** full PentaTrack integration with multi-mast track fusion.
+- **Phase 3:** event-camera + mmWave + LiDAR fused-perception pipeline (still simulated).
+- **Phase 4:** scenario library — published threat-trajectory datasets for reproducible research.
 
 There is no Phase N for hardware. By design.
 
