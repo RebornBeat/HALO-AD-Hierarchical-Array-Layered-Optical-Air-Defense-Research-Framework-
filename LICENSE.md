@@ -15,7 +15,7 @@ The `/hardware`, `/firmware`, and `/mechanical` directories are currently placeh
 
 ## MIT License
 
-Copyright (c) 2023-2024 HALO-AD Contributors
+Copyright (c) 2026 HALO-AD Contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
