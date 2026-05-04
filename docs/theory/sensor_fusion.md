@@ -2,156 +2,193 @@
 
 **Project:** HALO-AD
 **Domain:** Multi-modal sensor fusion at engagement timescales for distributed outdoor coverage
+**Status:** Theoretical / Simulation Framework
 
 ## 1. Purpose
 
-This document characterizes HALO-AD's approach to multi-modal sensor fusion in the long-range outdoor coverage context. It is structurally similar to AEGIS-MESH's `sensor_fusion.md` (which covers residential indoor sensing) but is parameterized for the longer-range, outdoor-atmospheric, fast-target-velocity regime that HALO-AD addresses.
+This document characterizes HALO-AD's approach to multi-modal sensor fusion in the long-range outdoor coverage context. It defines the architecture for combining disparate sensing modalities—Event-Based Vision, mmWave Doppler Radar, Scanning LiDAR, and Acoustic Echo profiling—into a unified perception layer.
 
-The fusion architecture combines event-based vision, mmWave Doppler radar, and scanning LiDAR. Each modality contributes distinct information; their fusion produces perception capabilities that no single modality achieves alone. This document specifies what each modality contributes, how the fusion is structured, and how it composes with PentaTrack's predictive-tracking layer.
+Unlike indoor sensing (AEGIS-MESH), HALO-AD operates in a regime defined by **extreme range**, **atmospheric interference**, and **high-velocity targets**. The fusion architecture must solve the "Latency vs. Resolution" trade-off: fast sensors (Radar/Event) provide immediate detection but low detail, while slow sensors (LiDAR) provide high detail but introduce scan-cycle lag.
 
-## 2. The Three Primary Modalities
+This document specifies what each modality contributes, how the fusion is structured, how it composes with PentaTrack's predictive-tracking layer, and how it handles the unique constraints of mast-mounted distributed arrays.
+
+## 2. The Sensing Modalities
+
+HALO-AD’s perception layer is built on four primary sensing modalities. Each modality occupies a specific niche in the "Latency vs. Resolution" matrix.
 
 ### 2.1 Event-Based Vision (Neuromorphic)
 
-Event-based image sensors emit asynchronous events when individual pixels detect illumination changes above a threshold. Reference parts include sensors from Prophesee and iniVation, with a published academic literature spanning roughly 15 years.
+Event-based image sensors (e.g., Prophesee, iniVation) emit asynchronous events when individual pixels detect illumination changes. They do not record "frames"; they record "change."
 
-For long-range outdoor coverage:
-
-- **Latency.** Microsecond-scale per event, vastly faster than frame-based imaging.
-- **Sparse output.** Static-scene background produces few events; moving targets produce a temporally compact stream of events along their apparent trajectory.
-- **High effective frame rate.** Equivalent to 10⁵+ fps for fast-moving objects, without the bandwidth and processing burden of true high-rate frame-based imaging.
-- **Limitations.** Requires illumination contrast; sensor-physics constraints on dynamic range; current commercial sensors have lower resolution than premium frame-based imagers (though this gap is closing).
-
-In HALO-AD's role, event-based vision excels at *fast-target detection* — the initial detection of a target appearing in the field. The microsecond latency means the simulator can model detection-to-track-initiation as essentially instantaneous, in contrast to the 50-100 ms typical for scanning LiDAR.
+*   **Strengths:**
+    *   **Microsecond Latency:** Detection is essentially instantaneous for moving objects. This is critical for crossing targets that traverse the field of view in milliseconds.
+    *   **High Dynamic Range (HDR):** Typically 120dB+, allowing operation in high-contrast environments (e.g., looking from shadow into bright sky).
+    *   **Data Efficiency:** Sparse output (only moving objects generate data) reduces processing load.
+*   **Weaknesses:**
+    *   **Requires Motion:** Static targets are invisible.
+    *   **Atmospheric Sensitivity:** Light is scattered by fog, smoke, and dust.
+*   **Role in HALO-AD:**
+    *   **Primary Trigger:** The "First Photon" detection layer. It alerts the system that a fast object has entered the volume, initiating the track.
 
 ### 2.2 mmWave Doppler Radar
 
-Continuous-wave or frequency-modulated continuous-wave radar at 24, 60, 77, or 94 GHz emits radio-frequency signal and observes the Doppler shift of returns. Reference parts include Texas Instruments IWR-series and Infineon BGT-series chipsets, with published academic and industrial literature on the underlying physics, the chipset architectures, and the application domains.
+Frequency-Modulated Continuous Wave (FMCW) radar operating at 24, 60, 77, or 94 GHz. It emits radio waves and analyzes the frequency shift (Doppler effect) of returns.
 
-For long-range outdoor coverage:
+*   **Strengths:**
+    *   **Direct Velocity Readout:** Doppler shift provides radial velocity instantly, without frame-to-frame differentiation.
+    *   **All-Weather Robustness:** RF penetrates fog, rain, smoke, and dust with minimal attenuation.
+    *   **Velocity Sensitivity:** Can detect the specific rotor signature of small UAS (micro-Doppler).
+*   **Weaknesses:**
+    *   **Low Spatial Resolution:** Antenna beamwidth limits angular resolution. It knows *something* is there and how fast it is moving, but not precisely *what* shape it is.
+*   **Role in HALO-AD:**
+    *   **Coarse Tracker:** Maintains track on targets when optical sensors are blinded by weather.
+    *   **Velocity Anchor:** Provides ground-truth velocity data to the PentaTrack prediction engine.
 
-- **Direct velocity readout.** Doppler shift gives radial velocity in a single measurement, with no frame-to-frame differentiation.
-- **Through-obscuration robustness.** Operates through fog, smoke, dust, light vegetation. Some attenuation but no hard cutoff.
-- **All-weather operation.** Rain attenuates somewhat at higher frequencies (94 GHz more than 24 GHz) but radar remains operable in conditions that disable optical sensors.
-- **Limited angular resolution.** Antenna geometry sets the angular resolution; mast-mounted antennas can be larger than wearable antennas, providing better resolution, but resolution is still coarser than LiDAR.
+### 2.3 Scanning LiDAR (Light Detection and Ranging)
 
-In HALO-AD's role, mmWave radar excels at *track initiation in degraded conditions* — when fog, dust, or smoke disable the optical sensors, radar maintains coverage. The direct velocity readout also makes radar the natural primary sensor for fast-target tracking, where Doppler velocity provides the single most informative observation per frame.
+Time-of-flight systems that emit laser pulses (typically 905nm or 1550nm) and measure return time.
 
-### 2.3 Scanning LiDAR
+*   **Strengths:**
+    *   **Geometric Precision:** Centimeter-level range accuracy.
+    *   **High Resolution:** Dense point clouds allow for shape classification (e.g., distinguishing a bird from a drone).
+*   **Weaknesses:**
+    *   **Scan Latency:** Mechanical or MEMS scanning creates a "time lag" between the first point and the last point in a scan cycle (typically 50-100ms).
+    *   **Atmospheric Failure:** Light scatters heavily in fog/rain.
+*   **Role in HALO-AD:**
+    *   **Geometry Refiner:** Once a track is initiated, LiDAR refines the position and classifies the object type.
+    *   **Volume Mapping:** Maps the background environment (terrain, obstacles) for the coverage geometry engine.
 
-Time-of-flight LiDAR with mechanical or solid-state scanning. Reference architectures span the published spectrum from spinning-mirror systems through rotating-prism systems to solid-state phased-array systems.
+### 2.4 Acoustic Echo Profiling (Sonar)
 
-For long-range outdoor coverage:
+While traditionally associated with underwater sensing, atmospheric acoustic sensing provides unique capabilities in the lower atmosphere.
 
-- **High spatial resolution.** Sub-degree angular resolution, centimeter-class range resolution, producing dense 3D point clouds.
-- **Direct geometric measurement.** Provides position, shape, and (with multi-frame analysis) trajectory of observed objects.
-- **Range and atmospheric sensitivity.** Effective range degrades substantially with atmospheric attenuation; performance in fog, smoke, dust is poor.
-- **Scan-cycle latency.** Typical scanning LiDAR completes one full scan in 50-100 ms; partial-field scans can be faster but produce gaps elsewhere.
-
-In HALO-AD's role, LiDAR excels at *high-resolution refinement* — once event-based vision or radar has detected and coarsely-tracked a target, LiDAR adds detailed geometric information that supports classification, pose estimation, and precise trajectory characterization.
+*   **Strengths:**
+    *   **Material Penetration:** Sound propagates through aerosols (smoke/dust) that blind optical systems.
+    *   **Full Echo Analysis:** Unlike simple ranging, analyzing the *full echo return* (intensity over time, frequency shifts) reveals:
+        *   **Surface Roughness:** Texture signatures.
+        *   **Material Density:** Distinguishing a plastic drone body from a metal casing.
+        *   **Internal Structure:** Resonances within a target.
+*   **Weaknesses:**
+    *   **Low Resolution:** Wavelengths are orders of magnitude larger than light, limiting spatial detail.
+    *   **Speed of Sound:** Propagation is slow (~343 m/s). For long-range detection, the round-trip time is significant (e.g., ~3 seconds for 1 km range).
+*   **Role in HALO-AD:**
+    *   **Short-Range Perimeter Defense:** Monitoring the "Shadow Cone" directly beneath the mast where optical angles fail.
+    *   **Classification Aid:** Providing material classification hints to disambiguate decoys from threats.
 
 ## 3. The Fusion Architecture
 
-The three modalities feed into a fusion pipeline structured as follows:
+The fusion pipeline is structured hierarchically to prioritize speed for detection and accuracy for tracking.
 
-### 3.1 Detection Layer (Modality-Native)
+### 3.1 Layer 1: The "Fast Trigger" (Event + Radar)
 
-Each modality processes its input in its native form:
+This layer operates on the microsecond-to-millisecond timescale.
+*   **Process:** The Event Camera detects a motion edge. Simultaneously, the Radar detects a Doppler velocity anomaly.
+*   **Fusion:** The system fuses these to create a **"Coarse Track"** (Position estimate with high uncertainty + Velocity estimate with high certainty).
+*   **Output:** A "Wake Up" signal is sent to the LiDAR to slew towards the coarse coordinates.
 
-- **Event-based vision.** Spike trains processed with neuromorphic-aware algorithms (event-clustering, optical-flow on spike streams).
-- **mmWave radar.** Range-Doppler maps processed with detection-and-tracking algorithms native to FMCW radar (CFAR detection, Doppler-bin tracking).
-- **LiDAR.** Point clouds processed with point-cloud algorithms (clustering, segmentation, semantic classification).
+### 3.2 Layer 2: The "Geometry Lock" (LiDAR)
 
-Each detection layer outputs *detections*: time-stamped observations with position estimates, velocity estimates (where available), and confidence scores.
+This layer operates on the 10-100ms timescale.
+*   **Process:** The LiDAR scans the volume indicated by Layer 1.
+*   **Fusion:** The high-resolution point cloud is merged with the Coarse Track. The track uncertainty collapses.
+*   **Output:** A precise 3D bounding box is generated.
 
-### 3.2 Track-Level Fusion
+### 3.3 Layer 3: The "Deep Analysis" (Full Echo & Acoustic)
 
-Modality-specific detections feed into a track-level fusion layer that associates detections from different modalities to a common set of tracks. Standard track-level-fusion algorithms (Joint Probabilistic Data Association, Multiple Hypothesis Tracking) provide the mathematical substrate; the published literature on radar-camera fusion in autonomous-driving applications is the closest direct precedent.
+This layer operates asynchronously to classify the target.
+*   **Process:** If the target is within range, acoustic sensors analyze the echo profile. Radar analyzes micro-Doppler signatures.
+*   **Fusion:** Material properties and engine signatures are added to the track metadata.
+*   **Output:** Target Classification (e.g., "Drone, Plastic Frame, Rotor-Engaged").
 
-The fusion layer maintains track state that integrates contributions from each modality:
+## 4. Latency Budgeting & Reaction Time
 
-- A track may be initiated by event-based vision, refined by radar (which adds velocity), and further refined by LiDAR (which adds high-resolution geometry).
-- A track may be initiated by radar in degraded conditions, then refined by event-based vision once optical conditions improve.
-- A track that loses one modality's contribution (e.g., LiDAR drops due to atmospheric degradation) continues with the remaining modalities, with appropriate confidence reduction.
+A critical capability of the fusion engine is the calculation of the **Reaction Time Budget**. The system must know if it can physically react to a threat before that threat exits the engagement volume.
 
-### 3.3 PentaTrack Integration
+**Formula:**
+$$T_{reaction} = T_{detect} + T_{process} + T_{steer}$$
 
-The fused tracks feed PentaTrack as a predictive-tracking substrate. PentaTrack's predictive-center field is computed for each track based on the fused state; the predictive-center field supports coverage-handoff decisions, multi-effector-engagement formulations (relevant to TALON-MESH; cross-referenced here), and trajectory-extrapolation queries.
+*   **$T_{detect}$ (Sensor Latency):**
+    *   Event Camera: ~1 µs
+    *   Radar: ~1 ms
+    *   LiDAR: ~50-100 ms (scan cycle)
+*   **$T_{process}$ (Fusion Latency):** ~5-10 ms (compute time for PentaTrack update).
+*   **$T_{steer}$ (Actuation Latency):** Time to mechanically or electronically point the effector.
 
-PentaTrack's parameter choices for the HALO-AD context follow `physics_models.md` (cross-project document): recursion depth 2-3, velocity-weighted prediction with cosine strategy, object-type awareness for the typical threat-class taxonomy, drift analysis with adaptive-drift enabled.
+**Constraint:**
+If $T_{reaction} > \frac{Distance_{target}}{Velocity_{target}}$, the system is "Reaction Limited."
 
-## 4. Modality Complementarity
+**HALO-AD Optimization:** The simulator uses the Event+Radar fusion to minimize $T_{detect}$, and Solid-State arrays to minimize $T_{steer}$, ensuring the Reaction Time Budget is satisfied for hypersonic or fast-crossing targets.
 
-The fusion architecture exploits the modalities' complementarity along several dimensions:
+## 5. Mast-Frame Stabilization (Drift Compensation)
 
-| Dimension | Event Vision | mmWave Radar | LiDAR |
-|---|---|---|---|
-| Latency | Microseconds | Milliseconds | Tens of milliseconds |
-| Spatial resolution | Moderate | Coarse | High |
-| Velocity readout | Indirect (gradient on spike stream) | Direct (Doppler) | Indirect (frame-to-frame) |
-| Through-obscuration | No | Yes | No |
-| All-weather | No | Yes | No |
-| Static-scene observability | No (events require change) | No (motion-mode default) | Yes |
-| Range | Shorter (illumination-limited) | Longer | Long (clear weather only) |
+Mast-mounted sensors face environmental motion:
+*   **Wind Sway:** Masts oscillate in wind.
+*   **Vibration:** Active cooling or machinery generates vibration.
+*   **Thermal Expansion:** Structures expand/contract with temperature.
 
-The fusion architecture's value is in the *complementarity*: each modality covers failure modes of the others. Optical-sensor failure in fog is covered by radar; radar's coarse spatial resolution is covered by LiDAR; LiDAR's scan-cycle latency is covered by event-based vision.
+This introduces **Drift** into the sensor readings relative to the ground frame.
 
-## 5. Atmospheric Coupling
+### 5.1 The "Body-Frame" Problem
+This is analogous to the "Body-Frame Drift" in SENTINEL-WEAR (wearables). The sensor is moving relative to the world, but the readings appear as if the world is moving.
 
-Each modality's effective range depends on atmospheric conditions. The fusion layer incorporates atmospheric awareness:
+### 5.2 Stabilization Architecture
+1.  **High-Frequency IMU:** Each mast node contains an Inertial Measurement Unit (IMU) sampling at >200 Hz.
+2.  **Drift Subtraction:** The IMU measures mast sway in real-time. The fusion engine subtracts this "ego-motion" from the Event and LiDAR streams.
+3.  **Radar Anchor:** Since Radar measures velocity relative to the ground (Doppler), it acts as a "truth anchor" to correct drift in the optical tracks.
 
-- In clear conditions, all three modalities operate at their nominal ranges; the fusion layer prioritizes LiDAR's high-resolution information for established tracks while using event-based vision and radar for early detection.
-- In degraded optical conditions (fog, smoke), the fusion layer downweights or excludes LiDAR and event-based vision, relying on radar.
-- In severely-degraded radar conditions (heavy rain at 94 GHz), the fusion layer adapts its radar-confidence weighting and may suggest sensor-frequency reconfiguration if the array supports multi-frequency operation.
+**Outcome:** A stable, ground-referenced track is maintained even if the mast is swaying violently in wind.
 
-Atmospheric awareness is computed continuously from environmental sensors (humidity, visibility, wind) plus the sensors' own degradation observations (signal-to-noise on returns, observed clutter levels). The simulator's atmospheric-models documentation specifies the underlying parameterization.
+## 6. Atmospheric Coupling & Degradation Logic
 
-## 6. Multi-Mast Track Fusion
+The fusion engine actively monitors atmospheric conditions to weight sensor inputs.
 
-When multiple masts observe the same target, their per-mast tracks must be fused into a single shared track. The geometric problem is more complex than single-mast fusion because:
+*   **Clear Air:**
+    *   LiDAR Weight: HIGH
+    *   Radar Weight: MEDIUM
+    *   Event Weight: HIGH
+*   **Fog / Rain / Dust:**
+    *   LiDAR Weight: LOW (Signal attenuated)
+    *   Radar Weight: HIGH (RF penetrates)
+    *   Event Weight: LOW (Obscured optics)
+*   **Smoke / Chemical Obscurant:**
+    *   LiDAR Weight: ZERO
+    *   Radar Weight: HIGH
+    *   Acoustic Weight: MEDIUM (Sound penetrates smoke better than light).
 
-- Each mast observes the target from a different perspective, producing different per-modality detections.
-- Inter-mast time synchronization is finite (sub-millisecond is achievable but requires explicit infrastructure).
-- Track-association across masts must reconcile observations that may have moderate position-estimate disagreement due to perspective differences.
+The simulator dynamically adjusts these weights in real-time based on the scenario parameters.
 
-The simulator implements published multi-sensor track-fusion algorithms (covariance intersection, federated Kalman filtering) and characterizes the fusion-quality vs. inter-mast-bandwidth trade-off. Higher bandwidth supports more granular fusion (sharing raw detections rather than only fused tracks); lower bandwidth supports fewer granular fusion (track-state-only sharing). Researchers studying particular operational constraints can select the appropriate fusion granularity for their scenario.
+## 7. Multi-Mast Track Fusion
 
-## 7. Adversarial Robustness
+In the distributed array topology, multiple masts observe the same target from different angles.
 
-Each modality has characteristic adversarial-failure modes:
+### 7.1 Geometric Diversity
+Mast A sees the target from the left; Mast B sees it from the right.
+*   **Benefit:** Shadows (occlusion) on one side are visible from the other.
+*   **3D Triangulation:** Intersection of bearing lines from multiple masts provides high-accuracy 3D position without requiring high-resolution range-finding on a single mast.
 
-- **Event-based vision.** Vulnerable to bright illumination (saturating events), to scene-rate-overload (more events than the sensor bandwidth supports), and to optical decoys (hot or bright objects that produce events similar to threats).
-- **mmWave radar.** Vulnerable to RF jamming, to chaff (released to confuse the radar), and to RF decoys (small emitters mimicking target returns).
-- **LiDAR.** Vulnerable to optical jamming (intentional bright illumination at the sensor's operating wavelength), to retroreflective decoys, and to optical-obscurant attacks (deliberate fog or smoke).
+### 7.2 Handoff Synchronization
+As described in `zone_handoff.md`, tracks are handed between masts.
+*   **Prediction Extrapolation:** When Mast A hands off to Mast B, Mast B uses PentaTrack to predict where the target *will be* when it enters FoV, pre-positioning its scan window to reduce acquisition time.
 
-The fusion architecture's value here is *modal redundancy*: an attack effective against one modality typically does not also disable the others. Researchers studying adversarial-robustness can configure scenarios that exercise specific attack vectors and observe the fusion-architecture's degraded performance.
+## 8. Full Echo Analysis (Material & Density Hints)
 
-## 8. The Composition with Coverage Geometry
+Incorporating the "Rich Echo" capabilities of Radar and Acoustic sensors, the fusion engine adds a classification layer:
 
-The fusion architecture's outputs feed back into the coverage-geometry analysis. A scenario's *effective coverage* is not just the geometric coverage from `coverage_geometry.md`; it is the geometric coverage filtered through the fusion-architecture's detection-probability and track-quality outputs.
+*   **Echo Intensity:** Indicates surface reflectivity (Metal vs. Plastic vs. Wood).
+*   **Frequency Shift (Non-Doppler):** Acoustic returns shift frequency when hitting soft materials (cloth) vs. hard materials (steel).
+*   **Multi-Bounce:** Complex echo profiles (multiple return peaks) indicate complex internal geometry or cavities (e.g., "Hollow" vs. "Solid").
 
-A voxel that is geometrically observable from three masts but where atmospheric conditions disable two of those masts' optical sensors has effective coverage from one radar; the detection probability and track quality are correspondingly reduced.
+**Simulation Output:** The track object is tagged with a `material_probability` vector (e.g., `{metal: 0.1, plastic: 0.8, biological: 0.1}`).
 
-The simulator integrates fusion-output and coverage-geometry into a single *effective-engagement-volume* computation per scenario. This is the simulator's primary research output for each deployment-scenario configuration.
+## 9. Civilian Transfer Applications
 
-## 9. Civilian Transfer
+The fusion architecture developed for HALO-AD transfers directly to:
 
-The fusion architecture transfers to several civilian outdoor-perception domains:
+1.  **Autonomous Driving:** Fusing LiDAR, Radar, and Cameras for robust perception in rain/fog.
+2.  **Air Traffic Management:** Multi-sensor fusion for tracking aircraft in all weather conditions.
+3.  **Maritime Navigation:** Radar + Optical fusion for collision avoidance at sea.
+4.  **Industrial Safety:** Monitoring exclusion zones in factories where dust or steam blinds standard cameras.
 
-- **Autonomous-driving perception.** Multi-modal radar-LiDAR-camera fusion is the dominant published approach; HALO-AD's framework adapts directly with appropriate parameter changes for the shorter-range automotive context.
-- **Air-traffic-management surveillance.** Multi-sensor fusion for airspace surveillance shares many architectural elements; the parameter regime is similar to HALO-AD's.
-- **Maritime surveillance.** Coastal-surveillance and harbor-monitoring systems use similar multi-modal architectures; the LiDAR component is sometimes replaced by surface-radar, but the fusion architecture is otherwise analogous.
-- **Wildlife monitoring at large scale.** Distributed sensor networks for wildlife observation use a subset of the modalities (typically event-based vision plus environmental sensors, with radar at larger installations) with similar fusion principles.
-- **Sports tracking at scale.** Stadium-scale player and ball tracking uses multi-modal fusion (typically multiple cameras plus radar for high-speed events) with the same fundamental architecture.
+## 10. Conclusion
 
-The civilian-transfer examples will include at least one example per civilian domain.
-
-## 10. References
-
-- Published mmWave radar literature: IEEE Transactions on Aerospace and Electronic Systems; conference proceedings of IEEE Radar Conference.
-- Published event-based vision literature: IEEE Transactions on Pattern Analysis and Machine Intelligence; conference proceedings of CVPR, ICCV, ECCV.
-- Published LiDAR literature: Optics Express; conference proceedings of SPIE.
-- Published multi-sensor-fusion literature: IEEE Transactions on Aerospace and Electronic Systems (multi-target tracking); conference proceedings of FUSION (International Conference on Information Fusion).
-- Published autonomous-driving sensor-fusion literature: IEEE Transactions on Intelligent Vehicles; conference proceedings of IV (Intelligent Vehicles Symposium).
-
-The maintainers update this references section as the published literature evolves.
+The HALO-AD sensor fusion layer is not merely a sum of parts; it is an orchestrated hierarchy designed to defeat latency and atmospheric degradation. By prioritizing **Event-Based Vision** for speed, **Radar** for weather robustness, **LiDAR** for geometry, and **Acoustics** for material analysis, the system creates a perception bubble that is resilient to the failure of any single modality. This fused data feeds the PentaTrack predictive engine, ensuring that the coordination layer has the highest possible quality input to make assignment decisions.
