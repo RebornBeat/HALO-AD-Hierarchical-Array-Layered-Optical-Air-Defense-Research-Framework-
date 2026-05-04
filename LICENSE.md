@@ -1,6 +1,3 @@
-
-# LICENSE.md
-
 **HALO-AD Licensing Overview**
 
 This repository contains multiple types of content (software code, documentation, and hardware design placeholders). Different license terms apply to different types of content. The license applicable to a specific file is determined by its location in the repository and the terms below.
