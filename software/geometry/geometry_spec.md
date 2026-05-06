@@ -285,4 +285,3 @@ Key test cases:
 - `gaussian_beam_radius_full(0.05, 1000.0, 1.55e-6, 1.5)` ≈ computed Rayleigh result
 - `power_density_at_range(1.0, 0.05)` = 127.3 W/m²
 - Shadow cone coverage: point inside cone of mast A confirmed visible from mast B at known separation
-```
