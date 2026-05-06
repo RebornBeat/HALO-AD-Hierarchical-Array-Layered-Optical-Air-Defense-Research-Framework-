@@ -87,7 +87,9 @@ N masts each at height $H_{short} = H_{single} / K$ for some factor $K > 1$.
 
 For the same horizon at the same target altitude, the horizon equation gives:
 
-$$d_{horizon}(\text{N masts at } H_{short}) = \max_{i} \left\{ 3.57 \times (\sqrt{H_{short}} + \sqrt{h_t}) \right\}$$
+$$
+d_{horizon}(\text{N masts at } H_{short}) = \max_{i} \left\lbrace 3.57 \times (\sqrt{H_{short}} + \sqrt{h_t}) \right\rbrace
+$$
 
 Each individual mast has shorter horizon than the single tall mast. The distributed array compensates with spatial distribution: neighboring masts together cover corridors that neither covers alone.
 
