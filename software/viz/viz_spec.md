@@ -1,34 +1,32 @@
-# Visualization Specification — HALO-AD
+# Visualization Engine Specification — `halo-viz` Crate
 
-**Component:** `software/viz` (implemented by `crates/halo-viz`)
-**Role:** Transforms simulation outputs into human-readable visual reports (3D renders, heatmaps, trajectory plots).
+**Component:** `halo-viz` (implemented in `crates/halo-viz`)
+**Role:** Transforms simulation outputs into human-readable visual reports
+**Version:** 1.0
 
 ---
 
 ## 1. Purpose
 
-The `viz` module bridges the gap between raw simulation data (voxel grids, CSV logs) and actionable insight. It produces the graphical outputs that allow researchers to:
+The `viz` module bridges raw simulation data (voxel grids, CSV logs) and actionable insight. It produces graphical outputs that allow researchers to:
 
-1.  **Verify Geometry:** Visually confirm that mast placements produce the intended coverage.
-2.  **Analyze Performance:** See where tracks were lost, where handoffs failed, and where blind spots exist.
-3.  **Compare Topologies:** Visually distinguish between `ConeToCenter`, `ParallelArray`, and other deployments.
-4.  **Debug Scenarios:** Inspect threat trajectories and sensor fields of view in 3D.
+1. **Verify Geometry:** Visually confirm mast placements produce intended coverage.
+2. **Analyze Performance:** See where tracks were lost, handoffs failed, and blind spots exist.
+3. **Compare Topologies:** Visually distinguish `ConeToCenter`, `ParallelArray`, and other deployments.
+4. **Debug Scenarios:** Inspect threat trajectories and sensor fields of view in 3D.
 
-The primary implementation lives in `crates/halo-viz`. This document specifies the inputs, outputs, and visualization types.
+All outputs are static files (HTML, SVG, PNG) or embedded data in self-contained HTML reports — no real-time rendering, no GPU dependency. Suitable for research papers, presentations, and reproducible comparison.
+
+**Dependencies:** `halo-core`, `halo-geometry`, `halo-simulator`, `plotters` (2D charts), `serde_json` (embedding data in HTML), `base64` (embedding images).
 
 ---
 
 ## 2. Inputs
 
-The visualization module consumes the output products of the simulator and geometry engine:
-
 ### 2.1 Geometry Data (`halo-core`, `halo-geometry`)
 
-- **`VoxelGrid`**: The 3D occupancy map of the region (Open, Structure, Obstruction).
-- **`CoverageMap`**: Per-voxel observability data:
-    - `observable_count`: Number of masts with Line-of-Sight (LOS) to this voxel.
-    - `los_quality`: Average LOS quality score (0.0–1.0).
-    - `atmospheric_visibility`: Atmospheric transmission factor.
+- **`VoxelGrid`**: 3D occupancy map (Open, Structure, Obstruction).
+- **`CoverageMap`**: Per-voxel observability data (`observable_count`, `los_quality`, `atmospheric_visibility`).
 - **`MastDescriptors`**: Positions, heights, sensor types, depression limits.
 - **`ShadowCones`**: Computed blind-spot volumes under each mast.
 - **`ZoneBoundaries`**: 3D polygons defining districts and zones.
@@ -42,25 +40,20 @@ The visualization module consumes the output products of the simulator and geome
 
 ---
 
-## 3. Outputs
+## 3. Output Classes
 
-The module produces two classes of output:
+### 3.1 Static Images (PNG/SVG)
 
-### 3.1 Static Images (Raster/Vector)
+For embedding in PDFs, slide decks, and papers:
+- 2D slice views (horizontal/vertical cross-sections).
+- Topology diagrams.
 
-- **PNG/SVG** for embedding in PDFs, slide decks, and papers.
-- Used for:
-    - 2D slice views (horizontal/vertical cross-sections).
-    - Topology diagrams.
+### 3.2 Interactive Reports (Self-Contained HTML)
 
-### 3.2 Interactive Reports (HTML/JS)
-
-- **Self-contained HTML files** embedding all data and JS logic.
 - No external server required; open in a browser.
-- Used for:
-    - 3D scene exploration.
-    - Time-series playback (trajectory animation).
-    - Topology comparison dashboards.
+- 3D scene exploration.
+- Time-series playback (trajectory animation).
+- Topology comparison dashboards.
 
 ---
 
@@ -68,83 +61,62 @@ The module produces two classes of output:
 
 ### 4.1 3D Coverage Density Heatmap
 
-**Visual:**
-A 3D volumetric render where voxels are colored by observability count.
-
+**Visual:** 3D volumetric render where voxels are colored by observability count.
 - **Green:** High coverage (3+ masts).
-- **Yellow:** Moderate coverage (1-2 masts).
+- **Yellow:** Moderate coverage (1–2 masts).
 - **Red:** Observable but low quality (marginal LOS).
-- **Transparent:** Unobservable (engagement volume void).
+- **Transparent:** Unobservable.
 
-**Controls:**
-- Opacity slider.
-- Slice plane (X, Y, or Z).
-- Toggle visibility of:
-    - Mast positions.
-    - Shadow cones.
-    - Zone boundaries.
+**Controls:** Opacity slider, slice plane (X/Y/Z), toggle mast positions, shadow cones, zone boundaries.
+
+**Implementation:** `CoverageHeatmapRenderer` produces series of 2D slice images (one per altitude band) assembled into HTML with JavaScript altitude slider. Color scheme: Okabe-Ito palette (colorblind-friendly).
+
+```rust
+fn render(coverage_report: &CoverageReport, output_path: &Path) -> Result<(), VizError>
+```
 
 ### 4.2 Trajectory Overlay
 
-**Visual:**
-A 3D plot showing threat paths and tracking performance.
-
+**Visual:** 3D plot showing threat paths and tracking performance.
 - **Solid line:** True trajectory.
 - **Dashed line:** Estimated track.
 - **Circles:** Handoff event points (color: success/fail).
 - **X:** Track loss.
+- **Colored segments:** Trajectory colored by coverage volume membership.
 
-**Purpose:**
-To visually correlate tracking errors with coverage gaps.
+```rust
+fn render(coverage_report: &CoverageReport, track_log: &TrackLog, output_path: &Path) -> Result<(), VizError>
+```
 
 ### 4.3 Topology Comparison View
 
-**Visual:**
-A side-by-side 3D view for A/B testing.
-
-- **Left Pane:** Topology A (e.g., `GroundStatic`).
-- **Right Pane:** Topology B (e.g., `MastElevated`).
-- **Delta View:** Difference map highlighting gained/lost coverage.
+**Visual:** Side-by-side 3D view for A/B testing.
+- Left Pane: Topology A.
+- Right Pane: Topology B.
+- Delta View: Difference map highlighting gained/lost coverage.
 
 ### 4.4 Shadow Cone Visualization
 
-**Visual:**
-Renders the blind spot beneath each mast as a semi-transparent cone.
+Renders blind spots beneath each mast as semi-transparent cones.
 
-- **Purpose:** To verify that neighboring masts' coverage volumes intersect the shadow cones of their neighbors, ensuring no unobserved voids.
+**Purpose:** Verify that neighboring masts' coverage volumes intersect each other's shadow cones.
 
 ### 4.5 Zone Partitioning Render
 
-**Visual:**
-Overlays the defined zone boundaries onto the coverage heatmap.
-
-- **Lines:** Zone borders.
-- **Labels:** Zone IDs and assigned masts.
-- **Purpose:** To debug handoff logic and zoning config.
+Overlays defined zone boundaries onto coverage heatmap with zone IDs and assigned masts.
 
 ---
 
 ## 5. Technology Stack
 
-The implementation (`crates/halo-viz`) uses Rust to generate the data structures and JSON outputs, which are then rendered via embedded JavaScript libraries.
-
-- **Rust:**
-    - `serde` for JSON serialization.
-    - `nalgebra` for geometry transformations.
-- **HTML/JS:**
-    - **Three.js** for 3D WebGL rendering.
-    - **Plotly.js** for 2D/3D scientific plots.
-    - **D3.js** for topology diagrams.
+- **Rust:** `serde` for JSON serialization, `nalgebra` for geometry transformations, `plotters` for 2D/3D SVG charts.
+- **HTML/JS (embedded):** Three.js for 3D WebGL rendering, Plotly.js for scientific plots, D3.js for topology diagrams.
 
 ---
 
-## 6. API (Internal)
-
-The visualization module is typically called by `halo-cli` at the end of a run.
+## 6. API
 
 ```rust
-// Implementation in crates/halo-viz/src/lib.rs
-
 pub struct VizConfig {
     pub output_path: PathBuf,
     pub generate_interactive_html: bool,
@@ -161,7 +133,27 @@ pub fn generate_visualization(
 
 ---
 
-## 7. File Output Structure
+## 7. Report Generator
+
+`fn generate_html_report(run_dir: &Path, output_path: &Path) -> Result<(), VizError>`
+
+Assembles all run outputs into a single self-contained HTML report containing:
+- Scenario configuration summary
+- Key metrics table (coverage fraction, TTFT, handoff success rate)
+- Interactive coverage heatmap
+- Trajectory overlay per threat
+- Atmospheric condition impact table (nominal vs. degraded coverage)
+- If comparison run: side-by-side topology comparison with bar charts
+
+The report is fully self-contained (all assets embedded as base64 or inline SVG) for distribution as a single file.
+
+`fn render_topology_comparison(comparison_report: &ComparisonReport, output_path: &Path) -> Result<(), VizError>`
+
+Grouped bar chart comparing topology variants on: coverage fraction, mean coverage depth, time-to-first-track P50/P90, handoff success rate.
+
+---
+
+## 8. File Output Structure
 
 ```
 runs/<scenario_name>_<timestamp>/
@@ -178,14 +170,10 @@ runs/<scenario_name>_<timestamp>/
 
 ---
 
-## 8. Integration with Reports
+## 9. Integration with Reports
 
-The `halo-reports` crate embeds the static images into the main HTML report, while linking to the interactive HTML files for deeper analysis.
+`halo-reports` embeds static images into the main HTML report, while linking to interactive HTML files for deeper analysis.
 
----
+## 10. Alignment Note
 
-## 9. Alignment Note
-
-This spec describes the **visualization logic**.
-The actual code lives in `crates/halo-viz`.
-The `software/viz/` directory exists only to hold this spec and any supplementary asset files (e.g. colormap definitions).
+Visualization logic lives in `crates/halo-viz`. The `software/viz/` directory holds only this spec and supplementary asset files (colormap definitions).
