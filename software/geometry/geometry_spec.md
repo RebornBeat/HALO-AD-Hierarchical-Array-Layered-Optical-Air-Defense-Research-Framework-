@@ -1,18 +1,19 @@
-# Geometry Engine Specification — HALO-AD
+# Geometry Engine Specification — `halo-geometry` Crate
 
-**Component:** `halo-geometry` crate
+**Component:** `halo-geometry`
 **Version:** 0.1.0
 **Status:** Implementation Specification
+**Implements:** `docs/theory/coverage_geometry.md`, `docs/theory/mast_elevation_analysis.md`
 
 ---
 
 ## 1. Overview
 
-The Geometry Engine is the computational core of HALO-AD. It is responsible for all spatial calculations related to sensor coverage, line-of-sight (LOS), atmospheric effects on beam propagation, and optimal placement/orientation of emitter masts.
+The Geometry Engine is the computational core of HALO-AD. It provides all physics-correct geometric computations the simulator requires — sensor coverage, line-of-sight (LOS), atmospheric beam propagation, and optimal mast placement/orientation.
 
-While `docs/theory/coverage_geometry.md` establishes the physical laws and mathematical foundations, this document specifies the **implementation behavior**: data structures, algorithmic choices, input/output contracts, and performance requirements.
+It is a **pure library crate** with no I/O, no side effects, and no simulation state. Every function is a pure computation over well-defined inputs. While `docs/theory/coverage_geometry.md` establishes the physical laws and mathematical foundations, this document specifies the **implementation behavior**: data structures, algorithmic choices, input/output contracts, and performance requirements.
 
-The engine consumes **scenario configuration** (mast positions, topologies, threat trajectories) and produces **coverage reports** (voxel observability, blind spots, quality metrics).
+**Dependencies:** `halo-core`, `omni-sense-atmospherics`, `omni-sense-frames`, `nalgebra`.
 
 ---
 
@@ -26,16 +27,16 @@ The fundamental spatial representation. The 3D volume of interest is discretized
 
 ```rust
 pub struct VoxelMap {
-    pub bounds: Bounds,             // Axis-aligned bounding box of the region
-    pub resolution: f32,            // Edge length of each voxel (meters)
-    pub data: Vec<VoxelState>,      // Flattened 3D array
+    pub bounds: Bounds,
+    pub resolution: f32,       // Edge length of each voxel (meters)
+    pub data: Vec<VoxelState>, // Flattened 3D array
 }
 
 pub enum VoxelState {
-    Open,                           // Empty space
-    Structure,                      // Part of ground/buildings (permanent)
-    Obstruction,                    // Furniture, mobile objects
-    Unknown,                        // Unmapped
+    Open,
+    Structure,     // Ground/buildings (permanent)
+    Obstruction,   // Furniture, mobile objects
+    Unknown,
 }
 
 pub struct Bounds {
@@ -44,87 +45,76 @@ pub struct Bounds {
 }
 ```
 
-**Implementation Note:**
-- **Storage:** `Vec<VoxelState>` is memory-intensive for large volumes. For sparse environments (mostly air), consider a hierarchical representation (Octree) or spatial hashing in future optimizations.
-- **Indexing:** `(x, y, z)` world coordinates map to `(i, j, k)` indices via `floor((coord - min) / resolution)`.
+**Implementation Notes:**
+- `Vec<VoxelState>` is memory-intensive for large volumes. For sparse environments, a hierarchical representation (Octree) or spatial hashing is a future optimization path.
+- `(x, y, z)` world coordinates map to `(i, j, k)` indices via `floor((coord - min) / resolution)`.
 
 ### 2.2 MastDescriptor
-
-Describes a single emitter mast and its sensor suite.
 
 ```rust
 pub struct MastDescriptor {
     pub id: String,
-    pub position_m: Vector3<f32>,         // Base position
-    pub height_m: f32,                     // Mast height
+    pub position_m: Vector3<f32>,
+    pub height_m: f32,
     pub sensors: Vec<SensorConfig>,
-    pub depression_limit_deg: f32,         // Max down-look angle
+    pub depression_limit_deg: f32,
 }
 
 pub struct SensorConfig {
     pub sensor_type: SensorType,
-    pub orientation: Vector3<f32>,          // Aiming direction
-    pub beam_width: f32,                    // For beam divergence calcs
+    pub orientation: Vector3<f32>,
+    pub beam_width: f32,
 }
 ```
 
 ### 2.3 CoverageReport
-
-The primary output of the geometry engine.
 
 ```rust
 pub struct CoverageReport {
     pub total_voxels: u64,
     pub observable_voxels: u64,
     pub coverage_fraction: f32,
-    pub voxel_depth_histogram: HashMap<u8, u64>, // Key: count of observers, Value: voxel count
+    pub voxel_depth_histogram: HashMap<u8, u64>,
     pub blind_spots: Vec<VoxelCoord>,
-    pub per_mast_coverage: HashMap<String, f32>, // Mast ID -> % of volume it sees
+    pub per_mast_coverage: HashMap<String, f32>,
 }
 ```
 
 ---
 
-## 3. Algorithms
+## 3. Module: `horizon`
 
-### 3.1 Horizon Calculation
+### `earth_curvature_horizon(sensor_height_m: f32, target_altitude_m: f32) -> f32`
 
-**Function:** `calc_horizon_distance(sensor_h: f32, target_h: f32) -> f32`
+Returns the horizon distance in kilometers.
 
-Calculates the geometric horizon distance due to Earth's curvature.
+**Formula:** $d = 3.57 \times (\sqrt{h_s} + \sqrt{h_t})$
 
-**Formula:**
-$$d \approx 3.57 \times (\sqrt{h_s} + \sqrt{h_t})$$
-Where:
-- $d$ = distance in km
-- $h_s$ = sensor height in meters
-- $h_t$ = target height in meters
+Panics if either argument is negative.
+
+### `mast_horizon_gain(ground_height_m: f32, mast_height_m: f32, target_altitude_m: f32) -> f32`
+
+Returns the additional horizon distance (km) gained by lifting a sensor from `ground_height_m` to `mast_height_m`. Always non-negative.
 
 **Implementation Logic:**
-1. Check if `target_h` is below the minimum detectable altitude for `sensor_h`.
-2. If `sensor_h` is elevated (mast), the horizon distance increases.
-3. Return `0.0` if target is geometrically impossible to see (below horizon).
+1. Check if `target_altitude_m` is below the minimum detectable altitude for the sensor height.
+2. Return 0.0 if target is geometrically impossible to observe (below horizon).
 
 ---
 
-### 3.2 Shadow Cone Calculation
+## 4. Module: `shadow_cone`
 
-**Function:** `calc_shadow_cone(mast: &MastDescriptor) -> Cone`
+### `mast_shadow_cone_radius(mast_height_m: f32, depression_limit_degrees: f32) -> f32`
 
-Calculates the blind spot directly beneath a mast.
+Returns shadow cone radius at ground level.
 
-**Inputs:**
-- `mast.height_m`
-- `mast.depression_limit_deg`
+**Formula:** $r = H \times \tan(90° - \alpha)$
 
-**Geometry:**
-The shadow is a cone emanating from the sensor position downwards.
-- **Apex:** Mast position at `height_m`.
-- **Angle:** `90° - depression_limit`.
-- **Radius at ground:** `shadow_radius = height_m * tan(90° - depression_limit)`.
+### `is_in_shadow_cone(mast_position: Point3<f32>, mast_height_m: f32, depression_limit_degrees: f32, query_point: Point3<f32>) -> bool`
+
+Returns true if `query_point` falls within the shadow cone. Used by the coverage analyzer to flag uncovered shadow regions.
 
 **Output:**
-A `Cone` struct used for voxel exclusion:
 ```rust
 pub struct Cone {
     pub origin: Vector3<f32>,
@@ -135,123 +125,164 @@ pub struct Cone {
 
 ---
 
-### 3.3 Beam Propagation & Atmospheric Attenuation
+## 5. Module: `beam_propagation`
 
-**Function:** `calc_effective_range(sensor: &SensorConfig, atmosphere: &Atmosphere) -> f32`
+### `gaussian_beam_radius(initial_radius_m: f32, distance_m: f32, divergence_half_angle_rad: f32, beam_quality_m2: f32) -> f32`
 
-Calculates the distance at which a sensor's signal strength drops below a detection threshold.
+Linear approximation valid for `z >> z_R`:
+$$w(z) = w_0 + z \cdot M^2 \cdot \lambda / (\pi \cdot w_0)$$
+
+### `gaussian_beam_radius_full(waist_radius_m: f32, distance_m: f32, wavelength_m: f32, beam_quality_m2: f32) -> f32`
+
+Full Gaussian beam including Rayleigh range:
+$$w(z) = w_0 \times \sqrt{1 + (z/z_R)^2}, \quad z_R = \pi w_0^2 / (M^2 \lambda)$$
+
+### `power_density_at_range(total_power_w: f32, beam_radius_m: f32) -> f32`
+
+Returns W/m²: $P / (\pi \times w^2)$
+
+### `effective_range_given_atmosphere(sensor_nominal_range_m: f32, wavelength_m: f32, aperture_m: f32, beam_quality_m2: f32, atmosphere: &AtmosphericProfile, threshold_fraction: f32) -> f32`
+
+Combines beam divergence and atmospheric attenuation to compute usable range.
 
 **Steps:**
+1. Beam divergence: $w(z) = w_0 + z \cdot \theta$
+2. Power density: $I(z) = P_{total} / (\pi \cdot w(z)^2)$
+3. Atmospheric transmission (Beer-Lambert): $T(z) = e^{-\alpha z}$
+4. Iterate until $I(z) \cdot T(z)^2 < threshold$ (double pass for active sensors)
 
-1.  **Beam Divergence ($w(z)$):**
-    $$w(z) = w_0 + z \cdot \theta$$
-    Where $\theta = \frac{M^2 \cdot \lambda}{\pi \cdot w_0}$.
+**Implementation Note:** Use binary search or Newton's method, not linear stepping.
 
-2.  **Power Density ($I(z)$):**
-    $$I(z) = \frac{P_{total}}{\pi \cdot w(z)^2}$$
+### `atmospheric_path_length(mast_height_m: f32, target_altitude_m: f32, horizontal_range_m: f32) -> f32`
 
-3.  **Atmospheric Transmission ($T(z)$):**
-    $$T(z) = e^{-\alpha \cdot z}$$ (Beer-Lambert Law).
-    The extinction coefficient $\alpha$ is retrieved from `Atmosphere` profile based on wavelength.
-
-4.  **Effective Range Calculation:**
-    Iterate $z$ until:
-    $$I(z) \cdot T(z)^2 < \text{threshold}$$
-    (The square on $T(z)$ accounts for two-way path for active sensors).
-
-**Implementation Note:** Use binary search or Newton's method for efficient range finding, rather than linear stepping.
+Returns 3D path length: $\sqrt{r^2 + (H - h_t)^2}$
 
 ---
 
-### 3.4 Line-of-Sight (LOS) Analysis
+## 6. Module: `coverage_analyzer`
 
-**Function:** `analyze_los(origin: Vector3<f32>, target: Vector3<f32>, voxel_map: &VoxelMap) -> f32`
+### `struct CoverageAnalyzer`
 
-Determines if a target is visible from a sensor position and returns a **quality score** ($0.0$ to $1.0$), not just a boolean.
+**Fields:**
+- `voxel_map: VoxelGrid`
+- `masts: Vec<MastConfig>`
+- `atmosphere: AtmosphericProfile`
+- `min_coverage_depth: u32`
 
-**Algorithm (Ray Marching):**
-1.  **Ray Casting:** Define a ray from `origin` to `target`.
-2.  **Traversal:** Step along the ray through the `VoxelMap`. Use a 3D DDA (Digital Differential Analyzer) algorithm for efficient voxel traversal.
-3.  **Intersection Check:**
-    - If voxel state is `Structure` or `Obstruction`:
-        - Increment an obstruction counter.
-        - Track the penetration depth (how many obstructed voxels are crossed).
-    - If voxel state is `Open`:
-        - Continue.
-4.  **Quality Calculation:**
-    - `LOS_Quality = 1.0 - (penetration_depth / total_ray_length)`
-    - **Refinement:** Account for partial occlusions. If the ray clips the corner of an obstruction, `LOS_Quality` might be $0.7$ rather than $0.0$.
-    - **Atmospheric Degration:** Multiply result by atmospheric transmission $T(z)$.
+**Key methods:**
+
+`fn analyze(&self) -> CoverageReport`
+
+For each voxel in the grid, ray-marches from each mast. Computes: coverage fraction, per-voxel depth, shadow zone voxels, uncovered voxels.
+
+`fn coverage_fraction(&self) -> f32`
+
+Fraction of non-structure voxels observable by at least `min_coverage_depth` masts.
+
+`fn trajectory_metrics(&self, trajectory: &[Point3<f32>]) -> TrajectoryMetrics`
+
+Coverage continuity, gap statistics, and handoff opportunities along a trajectory.
+
+`fn robustness_analysis(&self) -> RobustnessReport`
+
+Runs analysis with each mast successively failed. Returns failure degradation curve.
+
+`fn critical_sensor_set(&self) -> Vec<MastId>`
+
+Returns masts whose removal reduces coverage fraction by more than a configurable threshold.
 
 ---
 
-### 3.5 Coverage Solver (Placement Optimizer)
+## 7. Module: `coverage_solver`
 
-**Function:** `solve_placement(region: &Region, budget: u32, voxel_map: &VoxelMap) -> Vec<MastDescriptor>`
+### `struct TopologyComparison`
 
-**Objective:** Find the minimum set of mast positions to observe all high-priority voxels.
+`fn compare(scenario: &ScenarioConfig, topologies: &[CoverageTopology]) -> ComparisonReport`
+
+Runs `CoverageAnalyzer` for each topology with the same voxel map and atmospheric conditions. Returns side-by-side metrics.
+
+### `fn pareto_frontier(scenario: &ScenarioConfig, height_range: RangeInclusive<f32>, count_range: RangeInclusive<u32>) -> Vec<ParetoPoint>`
+
+Sweeps the (H, N) parameter space. Returns the set of (H, N) pairs not dominated by any other on both coverage and cost.
+
+### `fn solve_placement(region: &Region, budget: u32, voxel_map: &VoxelMap) -> Vec<MastDescriptor>`
 
 **Algorithm:** Weighted Greedy Set Cover.
 
-**Inputs:**
-- `Region`: Defined bounds and priority weights per voxel.
-- `budget`: Maximum number of masts allowed.
-- `VoxelMap`: Geometry of the space.
-
 **Logic:**
-1.  **Candidate Generation:** Generate a grid of candidate positions (e.g., every 50m).
-2.  **Initial Scoring:** For each candidate, calculate the marginal coverage gain (how many uncovered high-priority voxels it would see).
-3.  **Greedy Selection:**
-    - Pick the candidate with the highest marginal gain.
-    - Add to `SolutionSet`.
-    - Update `CoveredSet`.
-    - Repeat until `CoveredSet` covers all priority voxels OR `budget` reached.
-4.  **Interference Check:** Ensure no two mmWave radars are within interference distance (parameterized).
-5.  **Output:** List of `MastDescriptor` objects.
+1. Generate candidate positions (grid every 50 m).
+2. Score each candidate by marginal coverage gain.
+3. Greedy selection: pick highest marginal gain, update covered set, repeat until budget reached.
+4. Interference check: no two mmWave radars within interference distance.
 
 ---
 
-## 4. Performance Requirements
+## 8. Module: `los_ray_marcher`
 
-| Operation | Target Latency | Note |
-| :--- | :--- | :--- |
-| Horizon Calculation | < 1 µs | Trivial calculation. |
-| Shadow Cone Calculation | < 1 µs | Trivial calculation. |
-| Beam Propagation (Range) | < 10 µs | Iterative search required. |
-| LOS Analysis (per pair) | < 100 µs | Ray marching can be expensive. Must be optimized (DDA/Spatial Hash). |
-| Full Coverage Report (1000 masts) | < 2 s | Parallelize per-mast analysis. |
+### `fn los_quality(from: Point3<f32>, to: Point3<f32>, voxel_map: &VoxelGrid, atmosphere: &AtmosphericProfile, wavelength_m: f32) -> f32`
 
-**Optimization Strategies:**
-- **Spatial Hashing:** For O(1) lookup of obstructions near a ray.
-- **Parallelism:** LOS checks for multiple masts can run in parallel (Rayon crate).
-- **Caching:** Cache LOS results for static geometry; only recompute for dynamic obstructions.
+Returns LOS quality in [0, 1]. Combines:
+- `geometric_fraction`: unobstructed fraction via multi-ray marching with spatial hash acceleration
+- `atmospheric_transmission`: Beer-Lambert double-pass for path length
+- `target_visibility`: fraction of target cross-section visible at observation angle
+
+**Algorithm (Ray Marching):**
+1. Ray casting from `origin` to `target`.
+2. Traversal using 3D DDA (Digital Differential Analyzer) for efficient voxel traversal.
+3. For each Structure/Obstruction voxel: increment obstruction counter, track penetration depth.
+4. `LOS_Quality = 1.0 - (penetration_depth / total_ray_length)` × atmospheric transmission.
+
+### `fn los_quality_fast(from: Point3<f32>, to: Point3<f32>, voxel_map: &VoxelGrid) -> f32`
+
+Single-ray approximation. Faster; suitable for coverage analysis where statistical accuracy over many voxels is acceptable.
 
 ---
 
-## 5. Interface (API)
+## 9. Performance Requirements
 
-The crate exposes a high-level `CoverageAnalyzer` struct.
+| Operation | Target Latency | Optimization Strategy |
+|---|---|---|
+| Horizon Calculation | < 1 µs | Trivial |
+| Shadow Cone Calculation | < 1 µs | Trivial |
+| Beam Propagation (Range) | < 10 µs | Binary search |
+| LOS Analysis (per pair) | < 100 µs | DDA + Spatial Hash |
+| Full Coverage Report (1000 masts) | < 2 s | Rayon parallelism |
+
+**Optimization Notes:**
+- **Spatial Hashing:** O(1) lookup for obstructions near a ray.
+- **Parallelism:** LOS checks for multiple masts run in parallel (Rayon).
+- **Caching:** Cache LOS results for static geometry; recompute only for dynamic obstructions.
+
+---
+
+## 10. Interface (API)
 
 ```rust
 impl CoverageAnalyzer {
-    /// Creates a new analyzer for a given region and atmospheric model.
     pub fn new(region: Region, atmosphere: Atmosphere) -> Self;
-
-    /// Adds a candidate mast position.
     pub fn add_candidate(&mut self, mast: MastDescriptor);
-
-    /// Runs the full analysis pipeline.
     pub fn analyze(&mut self) -> CoverageReport;
-
-    /// Returns the best placement configuration.
     pub fn get_optimal_placement(&self) -> Vec<MastDescriptor>;
 }
 ```
 
 ---
 
-## 6. Integration Points
+## 11. Integration Points
 
 - **`halo-simulator`:** Calls `analyze()` to generate scenario metrics.
 - **`halo-perception`:** Uses `analyze_los()` to determine sensor activation.
-- **`halo-atmospherics`:** Provides the `Atmosphere` struct and extinction coefficients.
+- **`halo-atmospherics`:** Provides `Atmosphere` struct and extinction coefficients.
+
+---
+
+## 12. Testing
+
+All functions are unit-tested against known analytical solutions documented in `docs/theory/coverage_geometry.md`.
+
+Key test cases:
+- `earth_curvature_horizon(2.0, 100.0)` ≈ 41.0 km ± 0.5 km
+- `gaussian_beam_radius_full(0.05, 1000.0, 1.55e-6, 1.5)` ≈ computed Rayleigh result
+- `power_density_at_range(1.0, 0.05)` = 127.3 W/m²
+- Shadow cone coverage: point inside cone of mast A confirmed visible from mast B at known separation
+```
