@@ -1,31 +1,29 @@
-# HALO-AD Perception Specification
+# Perception Engine Specification — `halo-perception` Crate
 
-**Component:** `halo-perception` crate
-**Domain:** Multi-modal perception simulation, multi-mast fusion, and tracking pipeline
-**Status:** Research Simulation Only
+**Component:** `halo-perception`
+**Domain:** Multi-modal perception simulation, multi-mast fusion, tracking pipeline
+**Status:** Research Simulation Only — no real hardware drivers
 **Version:** 1.0
+**Implements:** `docs/theory/sensor_fusion.md`
 
 ---
 
 ## 1. Purpose
 
-This document specifies the perception layer for the HALO-AD simulator. The perception layer sits between the **raw simulated sensors** (provided by OMNI-SENSE) and the **predictive tracking engine** (PentaTrack).
+The perception layer sits between the **raw simulated sensors** (OMNI-SENSE) and the **predictive tracking engine** (PentaTrack).
 
-Its responsibilities are:
+**Responsibilities:**
+1. Initialize and manage simulated sensors on each mast.
+2. Simulate atmospheric degradation of sensor performance.
+3. Fuse observations from multiple masts into unified tracks.
+4. Transform detections into zone/district coordinate frames.
+5. Feed fused tracks into PentaTrack for predictive center-field generation.
 
-1.  **Initialize and manage simulated sensors** on each mast.
-2.  **Simulate atmospheric degradation** of sensor performance.
-3.  **Fuse observations from multiple masts** into unified tracks.
-4.  **Transform detections** into the correct coordinate frames (Zone/District frames).
-5.  **Feed the fused tracks** into PentaTrack for predictive center-field generation.
-
-**Scope Constraint:** This layer is purely for simulation. It does not interact with real hardware. It consumes `SimulatedSensor` traits from OMNI-SENSE.
+**Dependencies:** `halo-core`, `halo-atmospherics`, `omni-sense-core`, `omni-sense-radar`, `omni-sense-lidar`, `omni-sense-event`, `omni-sense-fusion`, `omni-sense-atmospherics`, `omni-sense-frames`, `omni-sense-time`, `omni-sense-drivers-mmwave` (simulation feature), `omni-sense-drivers-lidar` (simulation feature), `omni-sense-drivers-event` (simulation feature), `pentatrack`.
 
 ---
 
 ## 2. Architecture
-
-The perception pipeline is structured as a series of transformations:
 
 ```
 Threat Generator (Truth Trajectory)
@@ -36,7 +34,7 @@ Atmospheric State
         ↓ Degraded Detections
 Per-Node Processing
         ↓ Local Detections
-Multi-Mast Fusion
+Multi-Mast Fusion (JPDA + CI)
         ↓ Fused Tracks
 PentaTrack Bridge
         ↓ Predicted Center Fields
@@ -47,7 +45,7 @@ Coordinator (Zone Handoff)
 
 ## 3. Simulated Sensor Stack
 
-HALO-AD uses three primary simulated sensor modalities. All are provided by the `omni-sense-drivers-*` crates with the `simulation` feature enabled.
+HALO-AD uses three primary simulated sensor modalities.
 
 ### 3.1 Scanning LiDAR
 
@@ -60,12 +58,10 @@ HALO-AD uses three primary simulated sensor modalities. All are provided by the 
 - `point_rate_hz`: Points per second.
 
 **HALO-AD Specific Behavior:**
-- The simulator injects **scan-cycle latency**. A detection's timestamp reflects the moment the beam swept that angle, not the frame end.
-- The **effective range** is computed per-pulse based on the current `AtmosphericProfile`.
+- Scan-cycle latency injection: detection timestamp reflects the moment the beam swept that angle.
+- Effective range computed per-pulse based on current `AtmosphericProfile`.
 
-**Output:** `Vec<RangeReturn>`
-
----
+**Output:** `Vec<RangeReturn>` → processed into `DetectionEvent` by `halo-perception::per_node_processing`.
 
 ### 3.2 mmWave FMCW Radar
 
@@ -76,52 +72,47 @@ HALO-AD uses three primary simulated sensor modalities. All are provided by the 
 - `num_virtual_antennas`: Array configuration for angular resolution.
 
 **HALO-AD Specific Behavior:**
-- **Doppler Sensitivity:** Simulates direct radial velocity measurement.
-- **Micro-Doppler:** Simulates rotor-blade signatures for UAS classification.
-- **All-Weather:** Unaffected by optical obscuration (fog/smoke), but slightly attenuated by heavy rain.
+- Doppler sensitivity: direct radial velocity measurement.
+- Micro-Doppler: simulates rotor-blade signatures for UAS classification.
+- All-weather: unaffected by optical obscuration; slightly attenuated by heavy rain per `AtmosphericProfile::mmwave_extinction_per_m()`.
 
-**Output:** `RangeDopplerMap` → `Vec<CfarDetection>`
-
----
+**Output:** `RangeDopplerMap` → `Vec<CfarDetection>` → `DetectionEvent`.
 
 ### 3.3 Event Camera
 
 **Implementation:** `omni-sense-drivers-event::SimulatedEventCamera`
 
 **Parameters:**
-- `resolution`: Sensor resolution (e.g., 640x480).
+- `resolution`: Sensor resolution (e.g., 640×480).
 - `contrast_threshold`: Trigger sensitivity.
 
 **HALO-AD Specific Behavior:**
-- **Microsecond Latency:** Detects fast transients (supersonic threats) where LiDAR is too slow.
-- **Sparse Output:** Only generates events for moving targets.
-- **Atmospheric Coupling:** Degrades gracefully in heavy fog/rain (reduced contrast).
+- Microsecond latency detection of fast transients.
+- Sparse output: only events for moving targets.
+- Atmospheric coupling: degrades in heavy fog/rain (reduced contrast).
 
-**Output:** `Vec<PixelEvent>`
+**Output:** `Vec<PixelEvent>` → motion event extraction → `DetectionEvent`.
 
 ---
 
 ## 4. Atmospheric Perception Layer
 
-This module applies atmospheric effects to sensor outputs. It is unique to HALO-AD due to the long-range, outdoor nature of the simulation.
-
 ### 4.1 Effective Range Calculation
 
-For every detection, the perception layer calculates an effective range based on the scenario's `AtmosphericProfile`.
+For every detection, the perception layer calculates effective range based on the scenario's `AtmosphericProfile`.
 
 ```rust
-// Logic in halo-perception::atmospheric_coupling
 fn compute_effective_range(
     nominal_range: f32,
     wavelength_nm: f32,
     atmosphere: &AtmosphericProfile
 ) -> f32 {
-    let extinction = atmosphere.extinction_at_wavelength(wavelength_nm);
-    let transmission = (-extinction * nominal_range).exp(); // Beer-Lambert
-    // Double pass for active sensors
-    let double_pass_transmission = transmission.powi(2);
-    // Find range where signal falls below threshold
-    // ... iterative or analytical solver ...
+    let extinction = atmosphere.extinction_at_wavelength_nm(wavelength_nm);
+    // Beer-Lambert double pass for active sensors
+    // Find range where signal falls below detection threshold
+    // Use binary search for efficiency
+    let threshold = 0.01; // 1% of peak signal
+    -threshold.ln() / (2.0 * extinction)  // simplified
 }
 ```
 
@@ -129,52 +120,50 @@ fn compute_effective_range(
 
 The fusion layer weights modalities based on atmospheric state:
 
-| Condition        | LiDAR Weight | Radar Weight | Event Camera Weight |
-| ---------------- | ------------ | ------------ | ------------------- |
-| Clear            | 1.0          | 0.8          | 1.0                 |
-| Fog / Smoke      | 0.1          | 1.0          | 0.2                 |
-| Heavy Rain       | 0.3          | 0.9          | 0.5                 |
+| Condition | LiDAR Weight | Radar Weight | Event Camera Weight |
+|---|---|---|---|
+| Clear | 1.0 | 0.8 | 1.0 |
+| Fog / Smoke | 0.1 | 1.0 | 0.2 |
+| Heavy Rain | 0.3 | 0.9 | 0.5 |
 
 ---
 
 ## 5. Multi-Mast Fusion
 
-HALO-AD's core perception challenge is fusing data from **multiple, distributed masts**.
-
 ### 5.1 Problem: Unknown Cross-Correlation
 
-Masts observe the same target from different angles. Their observation errors are correlated (shared atmosphere, shared target motion model), but the exact correlation is unknown and hard to estimate in real-time.
+Masts observe the same target from different angles. Observation errors are correlated (shared atmosphere, shared target motion model), but the exact correlation is unknown and hard to estimate in real-time.
 
 ### 5.2 Solution: Covariance Intersection (CI)
 
-We use **Covariance Intersection** (implemented in `omni-sense-fusion::covariance_intersection`) to fuse tracks from different masts.
-
 **Why CI?**
-- It is **consistent**: It never underestimates uncertainty.
-- It works **without knowledge of cross-correlation**.
-- It is robust to the independent noise models of different masts.
+- Consistent: never underestimates uncertainty.
+- Works without knowledge of cross-correlation.
+- Robust to independent noise models of different masts.
 
-**Implementation:**
+### `struct MultiMastFuser`
+
+Fuses `DetectionEvent` streams from all masts into a single coherent track set.
+
+**Association strategy:** `omni-sense-fusion::JpdaTracker` for multi-target association across mast observations.
+
+**Fusion strategy:** `omni-sense-fusion::covariance_intersection` for combining same-target observations.
+
 ```rust
-// In halo-perception::multi_mast_fusion
-fn fuse_mast_tracks(
-    tracks: &HashMap<MastId, Track>
-) -> FusedTrack {
-    // Extract position estimates and covariances
+fn fuse_mast_tracks(tracks: &HashMap<MastId, Track>) -> FusedTrack {
     let estimates: Vec<(Vector3<f32>, Matrix3<f32>)> = tracks.values()
         .map(|t| (t.position, t.covariance))
         .collect();
-
-    // Apply CI to get fused state
-    let (fused_pos, fused_cov) = covariance_intersection(&estimates);
-
+    let (fused_pos, fused_cov) = covariance_intersection_3d_multi(&estimates);
     FusedTrack { position: fused_pos, covariance: fused_cov, ... }
 }
 ```
 
-### 5.3 Track Association
+`fn update(&mut self, mast_detections: Vec<(MastId, Vec<DetectionEvent>)>, dt: f32) -> Vec<FusedTrack>`
 
-We use **Joint Probabilistic Data Association (JPDA)** for associating new detections to existing tracks across the mast array.
+`fn update_atmospheric_weights(&mut self, atmosphere: &AtmosphericProfile)`
+
+Adjusts per-modality weights based on current atmospheric conditions.
 
 ---
 
@@ -182,36 +171,29 @@ We use **Joint Probabilistic Data Association (JPDA)** for associating new detec
 
 ### 6.1 Frame Hierarchy
 
-1.  **World Frame:** Fixed ECEF/ENU frame.
-2.  **Mast Frame:** Attached to the mast structure.
-3.  **Sensor Frame:** Attached to the specific sensor on the mast.
+1. **World Frame:** Fixed ECEF/ENU frame.
+2. **Mast Frame:** Attached to the mast structure.
+3. **Sensor Frame:** Attached to the specific sensor on the mast.
 
 ### 6.2 Mast-Frame Stabilization
 
-Masts are not perfectly rigid. Wind and structural resonance cause **vibration and sway**.
+Masts are not perfectly rigid. Wind and structural resonance cause vibration and sway.
 
-**Modeling Sway:**
-- Simulated as a low-frequency sinusoidal offset + high-frequency jitter.
-- The `SimulatedMast` struct updates its `pose` every simulation tick.
+**Modeling Sway:** Simulated as low-frequency sinusoidal offset + high-frequency jitter. `SimulatedMast` struct updates its `pose` every simulation tick.
 
-**Correction:**
-- The perception layer uses `omni-sense-frames::BodyFrameStabilizer` (configured for mast frames).
-- It subtracts the mast's IMU-estimated motion from the sensor observation.
-- **Result:** Stable tracks in the World/Zone frame, even if the mast is swaying.
+**Correction:** `omni-sense-frames::BodyFrameStabilizer` (configured for mast frames) subtracts IMU-estimated mast motion from sensor observations. Result: stable tracks in World/Zone frame even when the mast sways.
 
 ---
 
 ## 7. Time Synchronization
 
-Masts are geographically distributed. Synchronization is critical.
-
 ### 7.1 Simulation Clock
 
-All simulated sensors share a **monotonic simulation clock**. There is no clock drift in the simulation.
+All simulated sensors share a monotonic simulation clock. No clock drift in simulation.
 
 ### 7.2 Latency Modeling
 
-While the clock is perfect, the **transport latency** is modeled:
+Transport latency is modeled even though the clock is perfect:
 
 ```toml
 [perception.network]
@@ -219,17 +201,47 @@ link_latency_ms = 5
 jitter_ms = 1
 ```
 
-This delay is injected between the sensor event generation and the fusion center receiving it.
+---
+
+## 8. Per-Node Processing
+
+### `struct SimulatedMastSensorArray`
+
+Aggregates all simulated sensors for a single mast. Constructed from `MastConfig` and current `AtmosphericProfile`.
+
+`fn poll_all(&mut self, scenario_state: &ScenarioState) -> Vec<DetectionEvent>`
+
+Polls all sensors, applies atmospheric degradation, transforms to zone frame via `omni-sense-frames`, returns all `DetectionEvent` values for this mast at the current simulation time.
+
+`fn build_sensor_array(mast: &MastConfig, atmosphere: &AtmosphericProfile) -> SimulatedMastSensorArray`
+
+Factory function. Configures simulation parameters from mast config.
 
 ---
 
-## 8. PentaTrack Integration
+## 9. Global Track Manager
 
-The `PentaTrackBridge` is the final stage of the perception layer.
+### `struct GlobalTrackManager`
 
-### 8.1 Conversion
+Manages track lifecycle over the full simulation run.
 
-Converts `FusedTrack` (from multi-mast fusion) into `DetectionEvent` for PentaTrack.
+- **Track initiation:** N-of-M rule over recent frames.
+- **Track maintenance:** Kalman prediction between detection updates.
+- **Track deletion:** Track coasted for longer than `max_coast_time`.
+
+Underlying filter: `omni-sense-fusion::KalmanFilter6` with state `[x, y, z, vx, vy, vz]`.
+
+`fn active_tracks(&self) -> &[Track]`
+
+---
+
+## 10. PentaTrack Bridge
+
+### `struct HaloAdPentaTrackBridge`
+
+Bridges `FusedTrack` output into PentaTrack's prediction tree.
+
+Maintains one `PentaTracker` per active track. HALO-AD configuration: depth 2–3, diagonals enabled, cosine-softmax weighting, LSQ velocity estimation, UAS drift profiles.
 
 ```rust
 impl From<FusedTrack> for DetectionEvent {
@@ -237,28 +249,27 @@ impl From<FusedTrack> for DetectionEvent {
         DetectionEvent {
             position: track.position,
             velocity: track.velocity,
-            covariance: track.covariance,
+            position_covariance: track.covariance,
             confidence: track.confidence,
-            source: "HALO-AD-Fusion".into(),
-            timestamp: track.timestamp,
             ..Default::default()
         }
     }
 }
 ```
 
-### 8.2 HALO-AD Parameters
+`fn update_all(&mut self, fused_tracks: &[FusedTrack]) -> Vec<(TrackId, PentaPrediction)>`
 
-The bridge configures PentaTrack for the defense scenario:
-
-- **Recursion Depth:** 2-3 (predict ahead for engagement timeline).
-- **Drift Profiles:** `LowAltitudeUAS`, `TerrainFollowing`, `Hypersonic`.
-- **Adaptive Drift:** Enabled (for maneuvering threats).
-- **Diagonals:** Enabled (3D maneuvering).
+`fn get_intercept_for_track(&self, track_id: TrackId, engagement_range_m: f32, effector_speed_ms: f32) -> Option<InterceptPoint>`
 
 ---
 
-## 9. Configuration
+## 11. Simulation Injection Interface
+
+The threat generator (`halo-simulator::ThreatGenerator`) injects threats into `ScenarioState`. The sensor simulation produces detections consistent with threat position, velocity, and type — including detection noise, range-dependent miss probability, and atmospheric degradation. The perception crate **never** directly reads the true threat position; it only sees what the simulated sensors report.
+
+---
+
+## 12. Configuration
 
 ```toml
 [perception]
